@@ -1,8 +1,14 @@
+/*
+	Given a array of integers, this piece of code examines several methods that compute the
+	cumulative sums of the array, i.e. in the resuting array, the n-th element is the sum of 1st
+	through n-th elements in the original array.
+*/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include "timerc.h"
 
-#define N 2048
+#define N 1024*128
 #define THREADSPERBLOCK 1024
 
 __global__ void cumulative_sum(int *a, int *b) {
@@ -26,6 +32,27 @@ __global__ void cumulative_sum(int *a, int *b) {
 	}
 	if (threadIdx.x == 0) {
 		b[blockIdx.x] = a[start + size - 1];
+	}
+}
+
+__global__ void sum_blocks(int *a) {
+	int size = 2 * blockDim.x;
+	int start = 2 * blockDim.x * blockIdx.x;
+
+	for (int step = 1; step < size; step *= 2) {
+		if (threadIdx.x < blockDim.x / step) {
+			a[start + 2 * step - 1 + threadIdx.x * step * 2] +=
+				a[start + step - 1 + threadIdx.x * step * 2];
+		}
+		__syncthreads();
+	}
+
+	for (int step = size / 2; step > 1; step /= 2) {
+		if (threadIdx.x < (size / step - 1)) {
+			a[start + step - 1 + step / 2 + threadIdx.x * step] +=
+				a[start + step - 1 + threadIdx.x * step];
+		}
+		__syncthreads();
 	}
 }
 
@@ -70,6 +97,20 @@ __global__ void cumulative_sum_shared_mem(int *a, int *b) {
 	}
 }
 
+__global__ void cumulative_sum_2(int *a, int *b) {
+	int start = 2 * blockDim.x * blockIdx.x;
+	int size = 2 * blockDim.x;
+
+	for (int step = 1; step <= blockDim.x; step *= 2) {
+		a[start + step + 2 * step * (threadIdx.x / step) + threadIdx.x % step]
+			+= a[start + step + 2 * step * (threadIdx.x / step) - 1];
+		__syncthreads();
+	}
+	if (threadIdx.x == 0) {
+		b[blockIdx.x] = a[start + size - 1];
+	}
+}
+
 
 int main() {
 	float time;
@@ -95,6 +136,7 @@ int main() {
 
 	gstart();
 	cumulative_sum<<<N/THREADSPERBLOCK/2,THREADSPERBLOCK>>>(dev_arr, dev_output);
+	sum_blocks<<<1, 1024>>>(dev_output);
 	fix_sum<<<N/THREADSPERBLOCK, THREADSPERBLOCK>>>(dev_arr, dev_output, 2 * THREADSPERBLOCK);
 	gend(&time);
 	printf("gpu time = %f\n", time);
@@ -107,7 +149,8 @@ int main() {
 
 	cudaMemcpy(dev_arr, host_arr, N * sizeof(int), cudaMemcpyHostToDevice);
 	gstart();
-	cumulative_sum_shared_mem<<<N/THREADSPERBLOCK, THREADSPERBLOCK>>>(dev_arr, dev_output);
+	cumulative_sum_shared_mem<<<N/THREADSPERBLOCK/2, THREADSPERBLOCK>>>(dev_arr, dev_output);
+	sum_blocks<<<1, 1024>>>(dev_output);
 	fix_sum<<<N/THREADSPERBLOCK, THREADSPERBLOCK>>>(dev_arr, dev_output, 2 * THREADSPERBLOCK);
 	gend(&time);
 	printf("gpu time (with shared memory)%f\n", time);
@@ -117,5 +160,21 @@ int main() {
 	// 	printf("%d ", host_output[i]);
 	// }
 	// printf("\n");
+
+	cudaMemcpy(dev_arr, host_arr, N * sizeof(int), cudaMemcpyHostToDevice);
+	gstart();
+	cumulative_sum_2<<<N/THREADSPERBLOCK/2, THREADSPERBLOCK>>>(dev_arr, dev_output);
+	sum_blocks<<<1, 1024>>>(dev_output);
+	fix_sum<<<N/THREADSPERBLOCK, THREADSPERBLOCK>>>(dev_arr, dev_output, 2 * THREADSPERBLOCK);
+	gend(&time);
+	printf("gpu time (with 2nd scheme)%f\n", time);
+
+	cudaMemcpy(host_output, dev_arr, N * sizeof(int), cudaMemcpyDeviceToHost);
+	// for (int i = 0; i < N; i++) {
+	// 	printf("%d ", host_output[i]);
+	// }
+	// printf("\n");
+
+
 	return 0;
 }
