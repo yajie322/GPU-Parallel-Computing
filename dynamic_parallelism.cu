@@ -8,7 +8,7 @@
 
 #define K 10
 #define N (1 << K)
-#define THREADS_PER_BLOCK 32
+#define THREADS_PER_BLOCK 512
 #define NUM_BLOCKS N/2/THREADS_PER_BLOCK
 
 __global__ void naive_recursive_sum(int *a, int n, int start) {
@@ -49,6 +49,28 @@ __global__ void better_recursive_sum(int *a, int *b) {
     }
 }
 
+__global__ void even_better_recursive_sum(int *a, int *b, int size) {
+	int *input = a + blockIdx.x * size;
+	int *output = b + blockIdx.x;
+
+	if (blockDim.x == 1) {
+		if (threadIdx.x == 0) {
+			output[0] = input[0] + input[1];
+		}
+		return;
+	}
+	if (blockDim.x > 1 && threadIdx.x < blockDim.x) {
+		input[threadIdx.x] += input[threadIdx.x + blockDim.x];
+	}
+	__syncthreads();
+
+	if (threadIdx.x == 0 && blockIdx.x == 0) {
+		even_better_recursive_sum<<<gridDim.x, blockDim.x/2>>>(a, b, size);
+		cudaDeviceSynchronize();
+	}
+	__syncthreads();
+}
+
 
 int main() {
 	cudaDeviceSetLimit(cudaLimitDevRuntimeSyncDepth, K+1);
@@ -76,5 +98,11 @@ int main() {
 	}
 	printf("error (better) is %d\n", result - N);
 
+	cudaFree(dev_output);
+	cudaMalloc((void **) &dev_output, NUM_BLOCKS * sizeof(int));
+	cudaMemcpy(dev_arr, host_arr, N * sizeof(int), cudaMemcpyHostToDevice);
+	even_better_recursive_sum<<<NUM_BLOCKS, THREADS_PER_BLOCK>>>(dev_arr, dev_output, THREADS_PER_BLOCK*2);
+	cudaMemcpy(&result, dev_output, sizeof(int), cudaMemcpyDeviceToHost);
+	printf("error (even better) is %d\n", result - N);
 	return 0;
 }
